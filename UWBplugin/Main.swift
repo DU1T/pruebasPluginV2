@@ -17,6 +17,12 @@ var anchorMap: [String: Vector3D]? = nil
 var distanceFilterEnabled: Bool = false
 var maxConnectionDistance: Double = 5.0
 
+/// Enables per-update / per-poll logging (sensor counts, positions, getCoords calls, etc.).
+/// Keep this `false` in production: those code paths run tens of times per second and the
+/// synchronous `print()` calls were the main cause of stutter on the Unity side. Flip to
+/// `true` only while debugging the filter/positioning. Module-wide (used across files).
+var uwbVerboseLogging = false
+
 
 /// Sets the anchor map (UWB sensor positions) from a JSON string received from Unity.
 ///
@@ -90,7 +96,13 @@ public func setDistanceFilter(_ enabled: Int32, _ maxDistance: Double) {
 @_cdecl("stop")
 public func stop(){
     print("[UWBPlugin] Stop method called.")
-    
+
+    // Explicitly stop scanning and accelerometer before releasing. Relying on dealloc alone can
+    // leave the Estimote scan / CoreMotion updates running; if start() is then called again you
+    // end up with two active scan sessions feeding the queue → duplicate updates and stutter.
+    positionCoordinator?.uwbManager?.stopScanning()
+    positionCoordinator?.accelerometerManager?.stopListening()
+
     viewModel = nil
     positionCoordinator = nil
     anchorMap = nil
@@ -103,7 +115,7 @@ public func stop(){
 ///   The string must be manually freed using `freeCString()` after use.
 @_cdecl("getCoords")
 public func getCoords() -> UnsafeMutablePointer<CChar> {
-    print("[UWBPlugin] getCoords function called")
+    //print("[UWBPlugin] getCoords function called")
     var coords: [String: Any]  // Use 'Any' so we can put Double or nil
     
     if let position = positionCoordinator?.getFilteredPosition() {
@@ -136,7 +148,7 @@ public func getCoords() -> UnsafeMutablePointer<CChar> {
 ///   - ptr: The pointer to the C string to be freed.
 @_cdecl("freeCString")
 public func freeCString(_ ptr: UnsafeMutablePointer<CChar>?) {
-    print("[UWBPlugin] Memory freed")
+    //print("[UWBPlugin] Memory freed")
     if let ptr = ptr {
         free(ptr)
     }
@@ -168,6 +180,6 @@ public func triggerUIRefresh() {
             object: UIApplication.shared
         )
         
-        print("[UWBPlugin] UI refresh workaround completed")
+        //print("[UWBPlugin] UI refresh workaround completed")
     }
 }

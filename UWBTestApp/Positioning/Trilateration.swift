@@ -46,8 +46,8 @@ private func multilateration(anchors: [Anchor]) -> Vector2D{
     let rhs = matrixMultiplication(A: transposedMatrix, rowsOfA: 3, B: vector, colsOfB: 1, sharedDim: n)
     
     let result = gaussJordan(A: lhs, n: 3, b: rhs)
-    print("Multilat result: \(result)")
-    
+    //print("Multilat result: \(result)")
+
     return Vector2D(x:result[0], y:result[1])
 }
 

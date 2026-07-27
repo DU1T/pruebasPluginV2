@@ -23,8 +23,12 @@ class AccelerometerManager{
 
 extension AccelerometerManager{
     func startListening(){
+        // Bound the accelerometer rate. Without this it runs at the device default (often very
+        // high), flooding the shared serial OperationQueue with predict() operations and causing
+        // stutter. refreshRate is the update interval in seconds (0.1 = 10 Hz).
+        motionManager.accelerometerUpdateInterval = Double(refreshRate)
         motionManager.startAccelerometerUpdates(to: self.accelerometerQueue) { (data, error) in
-            
+
             guard let data = data, error == nil else {
                 print("Accelerometer error: \(error?.localizedDescription ?? "Unknown error")")
                 return
@@ -39,6 +43,7 @@ extension AccelerometerManager{
     }
     
     func stopListening(){
-        self.motionManager.stopDeviceMotionUpdates()
+        // Must match startAccelerometerUpdates — stopDeviceMotionUpdates() does NOT stop it.
+        self.motionManager.stopAccelerometerUpdates()
     }
 }

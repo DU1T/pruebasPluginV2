@@ -161,8 +161,10 @@ extension PositionCoordinator: UWBManagerDelegate{
     ///   - rssi: The received signal strength indicator used to estimate proximity.
     func onDeviceDiscovered(deviceId: String, rssi: Double) {
         // if the device detected is not on our map we won't connect to it
-        print("[UWBplugin]: Discovered device \(deviceId)")
-        
+        if uwbVerboseLogging {
+            print("[UWBplugin]: Discovered device \(deviceId)")
+        }
+
         if !anchorsPositions.keys.contains(deviceId) {
             return
         }
@@ -233,26 +235,27 @@ extension PositionCoordinator: UWBManagerDelegate{
         // 4. We compute trilateration using only the in-range anchors.
         let activeAnchors = self.anchors.filter { !self.outOfRangeDevices.contains($0.key) }
 
-        print("[UWBPlugin] \(self.anchors.count) sensors connected, \(activeAnchors.count) in range.")
+        if uwbVerboseLogging {
+            print("[UWBPlugin] \(self.anchors.count) sensors connected, \(activeAnchors.count) in range.")
+        }
 
         if activeAnchors.count < 3{
-            print("[UWBPlugin] Less than 3 in-range sensors, setting position to null.")
             self.filteredPos = nil // if we are in range of less than three sensors we return nil (i.e. no fix)
             return
         }
 
-        print("[UWBPlugin] 3 or more in-range sensors, computing position.")
-
         let position = do_trilateration(anchors: activeAnchors)
-        
+
         // 4. We pass our computed position through the Kalman Filter
         KalmanFilter.shared.update(z: position.toSIMD())
         let filtered = KalmanFilter.shared.getX()
         let first = filtered[0]
         let second = filtered[1]
-        
+
         self.filteredPos = Vector2D(x: first, y: second)
-        print(String(describing: filteredPos))
+        if uwbVerboseLogging {
+            print(String(describing: filteredPos))
+        }
     }
     
 }

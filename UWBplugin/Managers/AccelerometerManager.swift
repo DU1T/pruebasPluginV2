@@ -35,8 +35,12 @@ extension AccelerometerManager{
     ///
     /// This method runs continuously until `stopListening()` is called.
     func startListening(){
+        // Bound the accelerometer rate. Without this it runs at the device default (often very
+        // high), flooding the shared serial OperationQueue with predict() operations and causing
+        // stutter. refreshRate is the update interval in seconds (0.1 = 10 Hz).
+        motionManager.accelerometerUpdateInterval = Double(refreshRate)
         motionManager.startAccelerometerUpdates(to: self.accelerometerQueue) { (data, error) in
-            
+
             guard let data = data, error == nil else {
                 print("Accelerometer error: \(error?.localizedDescription ?? "Unknown error")")
                 return
@@ -53,6 +57,7 @@ extension AccelerometerManager{
     /// Stops listening for accelerometer updates.
     /// Useful when the app goes to the background or the system needs to save power.
     func stopListening(){
-        self.motionManager.stopDeviceMotionUpdates()
+        // Must match startAccelerometerUpdates — stopDeviceMotionUpdates() does NOT stop it.
+        self.motionManager.stopAccelerometerUpdates()
     }
 }
