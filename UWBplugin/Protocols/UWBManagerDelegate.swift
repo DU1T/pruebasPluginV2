@@ -6,7 +6,9 @@
 //
 
 /// Protocol defining callbacks for UWB (Ultra-Wideband) device management and position updates.
-protocol UWBManagerDelegate{    
+/// Class-bound (`AnyObject`) so conformers can be held through `weak` references,
+/// which breaks the coordinator ↔ manager retain cycle.
+protocol UWBManagerDelegate: AnyObject {
     // MARK: connection functions
 
     /// Called when a UWB device successfully connects.
@@ -20,8 +22,8 @@ protocol UWBManagerDelegate{
     /// - Parameters:
     ///   - deviceId: The unique identifier of the disconnected device.
     func didDisconnect(deviceId: String)
-    
-    
+
+
     // MARK: triggered on event functions
 
     /// Triggered when a new UWB device is discovered during scanning.
@@ -36,5 +38,5 @@ protocol UWBManagerDelegate{
     /// - Parameters:
     ///   - deviceId: The unique identifier of the device that updated.
     ///   - distance: The latest measured distance to the device in meters.
-    func didUpdatePosition(deviceId: String, distance: Double)    
+    func didUpdatePosition(deviceId: String, distance: Double)
 }

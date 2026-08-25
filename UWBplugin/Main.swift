@@ -4,18 +4,27 @@
 //
 //  Created by Gustavo Gonzalez on 7/23/25.
 //
+//  Unity bridge. No function in this file may abort the process: a bad input from C#
+//  must translate into an error code (Int32 return, 0 = success), never a fatalError.
+//  ABI note: functions that used to return void and now return Int32 stay callable
+//  from existing C# `void` DllImports — the return register is simply ignored.
+//
 
 import Foundation
 import UIKit
 
-var viewModel:ViewModel? = nil
-var positionCoordinator:PositionCoordinator? = nil
+var viewModel: ViewModel? = nil
+var positionCoordinator: PositionCoordinator? = nil
 var anchorMap: [String: Vector3D]? = nil
 
-// Distance filter configuration. Stored here so it survives across start()/stop() and can be
-// set before start() is ever called; applied to the coordinator as soon as one exists.
+// Configuration stored here so it survives start()/stop() and can be set before
+// start() is ever called; applied to the coordinator as soon as one exists.
 var distanceFilterEnabled: Bool = false
 var maxConnectionDistance: Double = 5.0
+/// Assumed phone height in meters for slant-distance projection. Non-positive means
+/// the projection is disabled and raw UWB distances are used (matches the behavior of
+/// maps whose anchors are registered at phone height).
+var userHeight: Double = 0.0
 
 /// Enables per-update / per-poll logging (sensor counts, positions, getCoords calls, etc.).
 /// Keep this `false` in production: those code paths run tens of times per second and the
@@ -26,45 +35,58 @@ var uwbVerboseLogging = false
 
 /// Sets the anchor map (UWB sensor positions) from a JSON string received from Unity.
 ///
-/// This function parses a JSON string containing anchor coordinates and updates the anchor map.
-/// If a `ViewModel` and `PositionCoordinator` already exist, it updates the coordinator with the new anchors
-/// and disconnects from all previously connected sensors to refresh the setup.
+/// If a pipeline is already running, the new map is applied to it: per-anchor state and
+/// the Kalman filter are reset and all sensors are disconnected so positioning restarts
+/// cleanly on the new map.
 ///
-/// - Parameters:
-///   - str: A C-style string (UTF-8) containing a JSON map of anchor positions.
+/// - Parameter str: A C-style string (UTF-8) containing a JSON map of anchor positions.
+/// - Returns: 0 on success, -1 if the string is null, -2 if the JSON is invalid or
+///   empty (the previous map is kept in that case).
 @_cdecl("setAnchorMap")
-public func setAnchorMap(_ str: UnsafePointer<CChar>?) {
+public func setAnchorMap(_ str: UnsafePointer<CChar>?) -> Int32 {
     guard let str = str else {
-        fatalError("String parameter is nill")
+        print("[UWBPlugin] setAnchorMap: received null string")
+        return -1
     }
-    
-    let swiftString = String(cString: str)
-    let anchorMap_ = MapReader.readCoordinatesFromString(jsonMap: swiftString)
-    
-    // this
-    if let viewModel_ = viewModel, let positionCoordinator_ = positionCoordinator {
-        positionCoordinator_.setNewAnchors(anchorsPositions: anchorMap_)
-        positionCoordinator_.disconnectFromAllSensors() //*
+
+    guard let parsed = MapReader.readCoordinatesFromString(jsonMap: String(cString: str)),
+          !parsed.isEmpty else {
+        print("[UWBPlugin] setAnchorMap: invalid or empty JSON map, keeping previous map")
+        return -2
     }
-    
-    anchorMap = anchorMap_ //Refresh cada nivel
-    // TODO: refresh anchor map each time
+
+    anchorMap = parsed
+    positionCoordinator?.applyNewAnchorMap(parsed)
+    return 0
 }
 
-/// Initializes the UWB plugin and starts processing using the previously defined anchor map.
+/// Initializes the UWB plugin and starts positioning using the previously defined anchor map.
 ///
-/// This function must be called after setting the anchor map via `setAnchorMap`.
-/// It initializes the `ViewModel` and `PositionCoordinator` responsible for managing sensor data and position estimation.
+/// Must be called after `setAnchorMap`. Calling it while already running tears the
+/// current pipeline down and starts a fresh one (it never stacks two pipelines).
+///
+/// - Returns: 0 on success, -1 if no anchor map has been set.
 @_cdecl("start")
-public func start() {
+public func start() -> Int32 {
     print("[UWBPlugin] Start function called")
-    guard anchorMap != nil else{
-        fatalError("anchorMap is nill, make sure to assign a value via setAnchorMap function before.")
+    guard let map = anchorMap else {
+        print("[UWBPlugin] start: anchorMap is nil, call setAnchorMap first")
+        return -1
     }
-    viewModel = ViewModel(anchorMap: anchorMap!)
-    positionCoordinator = viewModel?.getPositionCoordinator()
-    // Apply any filter configuration set before start().
+
+    if viewModel != nil {
+        print("[UWBPlugin] start: already running — restarting pipeline")
+        stopPipeline()
+    }
+
+    let vm = ViewModel(anchorMap: map)
+    viewModel = vm
+    positionCoordinator = vm.getPositionCoordinator()
+
+    // Apply any configuration set before start().
     positionCoordinator?.setDistanceFilter(enabled: distanceFilterEnabled, maxDistance: maxConnectionDistance)
+    positionCoordinator?.setUserHeight(userHeight > 0 ? userHeight : nil)
+    return 0
 }
 
 /// Configures the distance filter from Unity.
@@ -90,96 +112,122 @@ public func setDistanceFilter(_ enabled: Int32, _ maxDistance: Double) {
     print("[UWBPlugin] setDistanceFilter enabled=\(isEnabled) maxDistance=\(maxDistance)")
 }
 
-/// Stops the UWB plugin, clearing all active references and data.
+/// Sets the assumed phone height (meters above the map's z = 0) used to project slant
+/// UWB distances onto the floor plane before trilateration.
 ///
-/// This function releases memory for the `ViewModel`, `PositionCoordinator`, and anchor map.
+/// When the anchors are mounted above phone height (e.g. on the ceiling) the raw
+/// distances are hypotenuses; projecting them removes an error that grows the closer
+/// the user stands to a sensor. Typical values: 1.2–1.4. Pass 0 or a negative value
+/// to disable the projection (default — correct when anchor z values already match
+/// phone height). Can be called before or after `start()`.
+///
+/// - Parameter height: Phone height in meters, or a non-positive value to disable.
+@_cdecl("setUserHeight")
+public func setUserHeight(_ height: Double) {
+    userHeight = height
+    positionCoordinator?.setUserHeight(height > 0 ? height : nil)
+    print("[UWBPlugin] setUserHeight \(height)")
+}
+
+/// Stops the UWB plugin, disconnecting sensors and releasing all active references.
 @_cdecl("stop")
-public func stop(){
+public func stop() {
     print("[UWBPlugin] Stop method called.")
-
-    // Explicitly stop scanning and accelerometer before releasing. Relying on dealloc alone can
-    // leave the Estimote scan / CoreMotion updates running; if start() is then called again you
-    // end up with two active scan sessions feeding the queue → duplicate updates and stutter.
-    positionCoordinator?.uwbManager?.stopScanning()
-    positionCoordinator?.accelerometerManager?.stopListening()
-
-    viewModel = nil
-    positionCoordinator = nil
+    stopPipeline()
     anchorMap = nil
 }
 
-/// Returns the most recent filtered coordinates of the user’s position as a JSON string.
+/// Tears down the active pipeline: disconnects all sensors, stops scanning and releases
+/// the references. The teardown operations retain what they need, so they still execute
+/// on the UWB queue after the globals are cleared.
+private func stopPipeline() {
+    positionCoordinator?.disconnectFromAllSensors()
+    positionCoordinator?.uwbManager?.stopScanning()
+    viewModel = nil
+    positionCoordinator = nil
+}
+
+/// Returns the most recent filtered coordinates of the user's position as a JSON string.
 ///
-/// - Returns: A C-style UTF-8 string representing the latest position in JSON format, e.g. `{"x": 1.2, "y": 3.4}`.
-///   If no position is available, returns `{"x": null, "y": null}`.
-///   The string must be manually freed using `freeCString()` after use.
+/// After the first fix, this keeps returning the last valid position during dropouts
+/// (fewer than 3 fresh anchors) instead of flickering to null — use `getPositionData`
+/// to judge freshness and quality. Returns `{"x":null,"y":null}` before the first fix.
+///
+/// - Returns: A C-style UTF-8 string, e.g. `{"x":1.200000,"y":3.400000}`.
+///   The string must be freed with `freeCString()` after use.
 @_cdecl("getCoords")
 public func getCoords() -> UnsafeMutablePointer<CChar> {
-    //print("[UWBPlugin] getCoords function called")
-    var coords: [String: Any]  // Use 'Any' so we can put Double or nil
-    
+    let json: String
     if let position = positionCoordinator?.getFilteredPosition() {
-        coords = [
-            "x": position.x,
-            "y": position.y
-        ]
+        json = String(format: "{\"x\":%.6f,\"y\":%.6f}", position.x, position.y)
     } else {
-        coords = [
-            "x": NSNull(),  // JSON-compatible representation of null
-            "y": NSNull()
-        ]
+        json = "{\"x\":null,\"y\":null}"
     }
-    
-    if let jsonData = try? JSONSerialization.data(withJSONObject: coords, options: []),
-       let jsonString = String(data: jsonData, encoding: .utf8) {
-        
-        // Return a C string (null-terminated UTF8)
-        let cString = strdup(jsonString)
-        return UnsafeMutablePointer(cString!)
-    } else {
-        // Return an empty JSON object on error
-        return strdup("{}")
-    }
+    return strdup(json)!
 }
-//*
-/// Frees a C-style UTF-8 string previously allocated by `getCoords()`.
+
+/// Returns the latest position fix together with its quality data, without any JSON
+/// allocation — intended for per-frame polling from Unity.
+///
+/// C# signature:
+/// ```csharp
+/// [DllImport("__Internal")]
+/// static extern int getPositionData(out double x, out double y, out double residual,
+///                                   out int activeAnchors, out double fixAgeMs);
+/// ```
 ///
 /// - Parameters:
-///   - ptr: The pointer to the C string to be freed.
+///   - outX: Filtered x coordinate (map meters).
+///   - outY: Filtered y coordinate (map meters).
+///   - outResidual: Trilateration RMS residual in meters (higher = less trustworthy).
+///   - outActiveAnchors: Number of anchors that fed the fix.
+///   - outFixAgeMs: Milliseconds elapsed since the fix was computed.
+/// - Returns: 1 if a fix is available (out parameters written), 0 otherwise.
+@_cdecl("getPositionData")
+public func getPositionData(_ outX: UnsafeMutablePointer<Double>?,
+                            _ outY: UnsafeMutablePointer<Double>?,
+                            _ outResidual: UnsafeMutablePointer<Double>?,
+                            _ outActiveAnchors: UnsafeMutablePointer<Int32>?,
+                            _ outFixAgeMs: UnsafeMutablePointer<Double>?) -> Int32 {
+    guard let snapshot = positionCoordinator?.getSnapshot() else {
+        return 0
+    }
+    outX?.pointee = snapshot.x
+    outY?.pointee = snapshot.y
+    outResidual?.pointee = snapshot.residual
+    outActiveAnchors?.pointee = Int32(snapshot.activeAnchorCount)
+    outFixAgeMs?.pointee = (Date().timeIntervalSince1970 - snapshot.timestamp) * 1000.0
+    return 1
+}
+
+/// Frees a C-style UTF-8 string previously allocated by `getCoords()`.
+///
+/// - Parameter ptr: The pointer to the C string to be freed.
 @_cdecl("freeCString")
 public func freeCString(_ ptr: UnsafeMutablePointer<CChar>?) {
-    //print("[UWBPlugin] Memory freed")
     if let ptr = ptr {
         free(ptr)
     }
 }
 
 
-/// Forces a UI refresh by simulating app background and foreground transitions.
+/// Forces a UI refresh as a workaround for Unity-related UI desynchronization on iOS.
 ///
-/// This is a workaround for Unity-related UI desynchronization issues on iOS.
-/// It posts system notifications mimicking background and foreground events to refresh the UI layer.
+/// The previous implementation posted synthetic didEnterBackground/willEnterForeground/
+/// didBecomeActive notifications; every SDK in the process receives those (Estimote,
+/// analytics, ARKit) and may pause sessions or corrupt state in response. This version
+/// pokes the view hierarchy directly instead, which only affects layout.
 @_cdecl("triggerUIRefresh")
 public func triggerUIRefresh() {
     print("[UWBPlugin] Triggering UI refresh workaround")
-    
+
     DispatchQueue.main.async {
-        // Simulate app going to background
-        NotificationCenter.default.post(
-            name: UIApplication.didEnterBackgroundNotification,
-            object: UIApplication.shared
-        )
-        
-        // Immediately simulate coming back to foreground (no delay)
-        NotificationCenter.default.post(
-            name: UIApplication.willEnterForegroundNotification,
-            object: UIApplication.shared
-        )
-        NotificationCenter.default.post(
-            name: UIApplication.didBecomeActiveNotification,
-            object: UIApplication.shared
-        )
-        
-        //print("[UWBPlugin] UI refresh workaround completed")
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            for window in windowScene.windows {
+                window.rootViewController?.view.setNeedsLayout()
+                window.rootViewController?.view.layoutIfNeeded()
+            }
+        }
     }
 }

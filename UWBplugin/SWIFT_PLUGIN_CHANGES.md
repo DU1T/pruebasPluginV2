@@ -4,6 +4,12 @@
 **Área:** `UWBplugin/` (framework nativo consumido por Unity)
 **Relacionado con:** `UWBTestApp/` (app de prueba SwiftUI, usada como referencia)
 
+> **Nota (agosto 2026):** este documento es histórico. La revisión posterior de
+> estabilidad y precisión (`CAMBIOS_ESTABILIDAD_PRECISION.md`) cambió detalles aquí
+> descritos: con menos de 3 anclas frescas ya **no** se publica `nil` — se conserva el
+> último fix y Unity consulta la frescura vía `getPositionData`. El diseño del filtro
+> de distancia (exclusión por datos + histéresis) sigue vigente tal como se describe.
+
 ---
 
 ## 1. Resumen

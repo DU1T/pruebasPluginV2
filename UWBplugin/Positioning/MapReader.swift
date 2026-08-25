@@ -10,6 +10,10 @@ import Foundation
 /// A utility class responsible for loading and decoding anchor map data.
 /// The map is represented as a dictionary where each key corresponds to an anchor ID
 /// and each value is a `Vector3D` object containing its 3D coordinates.
+///
+/// Both readers return `nil` on failure instead of aborting: this code is reachable
+/// from the Unity bridge, where a malformed JSON must produce an error code, never
+/// kill the host process.
 class MapReader {
 
     /// Reads and decodes a JSON file containing anchor coordinates from the framework bundle.
@@ -23,52 +27,49 @@ class MapReader {
     /// ```
     ///
     /// - Parameter fileName: The name of the JSON file to read, including its extension (e.g. `"anchorMap.json"`).
-    /// - Returns: A dictionary mapping each anchor’s identifier to its 3D coordinates.
-    ///
-    /// - Note: The file must be located within the framework’s bundle.
-    ///         If the file cannot be found or decoded, the method will terminate with a fatal error.
-    static func readCoordinates(from fileName: String) -> [String: Vector3D] {
+    /// - Returns: A dictionary mapping each anchor's identifier to its 3D coordinates,
+    ///   or `nil` if the file is missing or cannot be decoded.
+    static func readCoordinates(from fileName: String) -> [String: Vector3D]? {
         let fileComponents = fileName.split(separator: ".")
         guard fileComponents.count == 2 else {
-            fatalError("Invalid filename format. Expected 'name.extension'")
+            print("[UWBplugin]: Invalid map filename '\(fileName)', expected 'name.extension'")
+            return nil
         }
-        
+
         let name = String(fileComponents[0])
         let ext = String(fileComponents[1])
-        
+
         let bundle = Bundle(for: MapReader.self)
         guard let fileURL = bundle.url(forResource: name, withExtension: ext) else {
-            fatalError("File not found in framework bundle")
+            print("[UWBplugin]: Map file '\(fileName)' not found in framework bundle")
+            return nil
         }
-        
-        do {
-            let data = try Data(contentsOf: fileURL)
-            let decoder = JSONDecoder()
-            let result = try decoder.decode([String: Vector3D].self, from: data)
-            return result
-        } catch {
-            fatalError("Failed to read or decode JSON: \(error)")
+
+        guard let data = try? Data(contentsOf: fileURL) else {
+            print("[UWBplugin]: Could not read map file '\(fileName)'")
+            return nil
         }
+        return decode(data: data)
     }
-    
+
     /// Decodes a JSON string representing an anchor map into a dictionary of coordinates.
     ///
     /// This method allows dynamic loading of anchor maps received as raw JSON strings,
     /// for example from an API response or a Unity bridge call.
     ///
     /// - Parameter jsonMap: A JSON string containing the anchor coordinate data.
-    /// - Returns: A dictionary mapping each anchor’s identifier to its `Vector3D` coordinates.
-    ///
-    /// - Note: If the JSON string is invalid or decoding fails, the method will terminate with a fatal error.
-    static func readCoordinatesFromString(jsonMap: String) -> [String: Vector3D] {
+    /// - Returns: A dictionary mapping each anchor's identifier to its `Vector3D`
+    ///   coordinates, or `nil` if the JSON is invalid.
+    static func readCoordinatesFromString(jsonMap: String) -> [String: Vector3D]? {
+        return decode(data: Data(jsonMap.utf8))
+    }
+
+    private static func decode(data: Data) -> [String: Vector3D]? {
         do {
-            let data = Data(jsonMap.utf8)
-            let decoder = JSONDecoder()
-            let result = try decoder.decode([String: Vector3D].self, from: data)
-            return result
+            return try JSONDecoder().decode([String: Vector3D].self, from: data)
         } catch {
-            fatalError("Failed to read or decode JSON: \(error)")
+            print("[UWBplugin]: Failed to decode anchor map JSON: \(error)")
+            return nil
         }
     }
-    
 }
