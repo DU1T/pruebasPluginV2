@@ -129,6 +129,27 @@ public func setUserHeight(_ height: Double) {
     print("[UWBPlugin] setUserHeight \(height)")
 }
 
+/// Retunes the Kalman filter at runtime.
+///
+/// `measurementStd` is the assumed UWB measurement noise in meters (default 0.1):
+/// raising it makes the filter trust each fix less, so the position moves more smoothly
+/// but lags more. `processAccelStd` is the random-acceleration std in m/s² (default 0.8):
+/// raising it lets the position follow fast movement, lowering it damps jitter while
+/// standing still. Non-positive values leave that parameter unchanged.
+///
+/// Both take effect from the next measurement without dropping the current fix, so
+/// values can be compared live. Use `UWBTestApp` to find good values for a venue before
+/// hardcoding them in Unity.
+///
+/// - Parameters:
+///   - measurementStd: Measurement noise std in meters, or <= 0 to keep the current one.
+///   - processAccelStd: Process acceleration std in m/s², or <= 0 to keep the current one.
+@_cdecl("setKalmanTuning")
+public func setKalmanTuning(_ measurementStd: Double, _ processAccelStd: Double) {
+    positionCoordinator?.setKalmanTuning(measurementStd: measurementStd, processAccelStd: processAccelStd)
+    print("[UWBPlugin] setKalmanTuning measurementStd=\(measurementStd) processAccelStd=\(processAccelStd)")
+}
+
 /// Stops the UWB plugin, disconnecting sensors and releasing all active references.
 @_cdecl("stop")
 public func stop() {

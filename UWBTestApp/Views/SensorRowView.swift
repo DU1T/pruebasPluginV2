@@ -10,8 +10,14 @@ struct SensorRowView: View {
     let distance: Double?
     let isConnected: Bool
     let isOutOfRange: Bool
+    /// Connected but its last measurement is older than the freshness window, so it is
+    /// no longer feeding the fix even though the session is alive.
+    let isStale: Bool
+    /// Measurements rejected by the outlier gate for this sensor since it connected.
+    let gatedCount: Int
 
     private var status: SensorStatus {
+        if isConnected && isStale { return .stale }
         if isConnected && isOutOfRange { return .outOfRange }
         if isConnected { return .connected }
         if rssi != nil { return .discovered }
@@ -28,9 +34,19 @@ struct SensorRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("…\(shortId)")
                     .font(.system(.body, design: .monospaced))
-                Text(status.label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(status.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if gatedCount > 0 {
+                        Text("\(gatedCount) outliers")
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.red.opacity(0.15), in: Capsule())
+                            .foregroundStyle(.red)
+                    }
+                }
             }
 
             Spacer()
@@ -40,8 +56,8 @@ struct SensorRowView: View {
                     Text(String(format: "%.2f m", distance))
                         .font(.system(.callout, design: .monospaced))
                         .bold()
-                        .foregroundStyle(isOutOfRange ? .orange : .primary)
-                    Text(isOutOfRange ? "fuera de rango" : "distancia")
+                        .foregroundStyle(distanceColor)
+                    Text(distanceCaption)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else if let rssi {
@@ -57,18 +73,31 @@ struct SensorRowView: View {
         .padding(.vertical, 2)
     }
 
+    private var distanceColor: Color {
+        if isStale { return .blue }
+        if isOutOfRange { return .orange }
+        return .primary
+    }
+
+    private var distanceCaption: String {
+        if isStale { return "sin datos recientes" }
+        if isOutOfRange { return "fuera de rango" }
+        return "distancia"
+    }
+
     private var shortId: String {
         String(sensorId.suffix(12))
     }
 
     private enum SensorStatus: Equatable {
-        case notSeen, discovered, outOfRange, connected
+        case notSeen, discovered, outOfRange, stale, connected
 
         var label: String {
             switch self {
             case .notSeen:    return "No detectado"
             case .discovered: return "Descubierto"
             case .outOfRange: return "Fuera de rango"
+            case .stale:      return "Sin datos recientes"
             case .connected:  return "Conectado"
             }
         }
@@ -78,6 +107,7 @@ struct SensorRowView: View {
             case .notSeen:    return .gray.opacity(0.35)
             case .discovered: return .yellow
             case .outOfRange: return .orange
+            case .stale:      return .blue
             case .connected:  return .green
             }
         }

@@ -193,6 +193,14 @@ class PositionCoordinator {
         }
     }
 
+    /// Retunes the Kalman filter's R and Q at runtime (non-positive values are ignored).
+    /// Intended for on-site tuning against real measurements; the current fix is kept.
+    func setKalmanTuning(measurementStd: Double, processAccelStd: Double) {
+        uwbManager?.UWBQueue.addOperation { [weak self] in
+            self?.kalman.setTuning(measurementStd: measurementStd, processAccelStd: processAccelStd)
+        }
+    }
+
     /// Forces disconnection from all currently connected UWB sensors.
     func disconnectFromAllSensors() {
         // Strong capture on purpose: this runs during teardown and must still execute
@@ -283,7 +291,7 @@ extension PositionCoordinator: UWBManagerDelegate {
         if connectedDevices.count < connectionLimit {
             uwbManager?.connectTo(deviceID: deviceId)
         } else {
-            candidateDevices[deviceId] = Date().timeIntervalSince1970
+            candidateDevices[deviceId] = now
         }
     }
 

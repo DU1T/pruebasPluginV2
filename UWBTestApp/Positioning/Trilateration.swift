@@ -7,143 +7,80 @@
 
 import Foundation
 
-
-func do_trilateration(anchors: [String: Anchor])->Vector2D{
-    
-    if anchors.count > 3 {
-        let position = multilateration(anchors: Array(anchors.values))
-        return position
-    }else{
-        let topThreeAnchors = pickTopThreeAnchors(anchors: anchors)
-        let position = tirlaterate_3D(anchors: topThreeAnchors)
-        return position
-    }
+/// Result of a 2D position fix.
+struct TrilaterationEstimate {
+    let x: Double
+    let y: Double
+    /// RMS error (meters) between the measured distances and the distances from the
+    /// estimated position to each anchor. High values signal bad geometry, multipath
+    /// or obstacles — callers can use it to decide how much to trust the fix.
+    let residual: Double
 }
 
-private func pickTopThreeAnchors(anchors: [String: Anchor]) -> [Anchor]{
-    if anchors.count == 3 {
-        return Array(anchors.values)
-    }
-    
-    return anchors
-        .values
-        .compactMap { anchor in
-            anchor.timestamp != nil ? anchor : nil
+/// Estimates the 2D position of the device from 3+ anchors with known positions and
+/// measured distances.
+///
+/// Method: classic linearization. For each anchor i:
+///     (x - xi)² + (y - yi)² = di²
+/// Subtracting the first anchor's equation removes the quadratic terms, leaving a
+/// linear system A·[x,y]ᵀ = b solved by least squares (2×2 normal equations). This
+/// single path replaces the previous exact 3-anchor solver and the LAPACK-based
+/// multilateration: least squares handles both cases and cannot divide by zero or
+/// abort the process.
+///
+/// - Parameters:
+///   - anchors: Anchors with known positions and measured distances (3 or more).
+///   - userHeight: Assumed phone height in meters, used to project slant distances
+///     onto the floor plane: `d_h = sqrt(d² − (z_anchor − userHeight)²)`. Pass `nil`
+///     to use raw distances (correct when anchors sit at phone height).
+/// - Returns: The estimated position, or `nil` when there are fewer than 3 anchors
+///   or the anchors are (nearly) collinear. The caller should keep its last valid
+///   fix in that case.
+func trilaterate2D(anchors: [Anchor], userHeight: Double?) -> TrilaterationEstimate? {
+    guard anchors.count >= 3 else { return nil }
+
+    let projected: [(x: Double, y: Double, d: Double)] = anchors.map { anchor in
+        var d = anchor.distance
+        if let h = userHeight {
+            let dz = anchor.position.z - h
+            let horizontal2 = d * d - dz * dz
+            // A measurement shorter than the height difference means the phone is
+            // (noise aside) right under the anchor — clamp instead of going complex.
+            d = horizontal2 > 0 ? horizontal2.squareRoot() : 0.05
         }
-        .sorted { $0.timestamp! > $1.timestamp! }
-        .prefix(3)
-        .map { $0 }
-}
-
-
-private func multilateration(anchors: [Anchor]) -> Vector2D{
-    let (matrix, vector) = multInitializeMatrixVector(anchors: anchors)
-    let n = matrix.count/3
-    
-    let transposedMatrix = transpose(matrix: matrix, rows: n , cols: 3)
-    
-    let lhs = matrixMultiplication(A: transposedMatrix, rowsOfA: 3, B: matrix, colsOfB: 3, sharedDim: n)
-    let rhs = matrixMultiplication(A: transposedMatrix, rowsOfA: 3, B: vector, colsOfB: 1, sharedDim: n)
-    
-    let result = gaussJordan(A: lhs, n: 3, b: rhs)
-    //print("Multilat result: \(result)")
-
-    return Vector2D(x:result[0], y:result[1])
-}
-
-private func multInitializeMatrixVector(anchors: [Anchor])-> (matrix: [Double], vector: [Double]){
-    
-    var anchorsCopy = anchors
-    guard let pivot = anchorsCopy.popLast() else {
-        fatalError("pivotAnchor is nil")
+        return (anchor.position.x, anchor.position.y, d)
     }
-    
-    var matrix: [Double] = []
-    var vector: [Double] = []
-    
-    for anchor in anchors{
-                
-        matrix.append(contentsOf: [
-            2 * (pivot.position.x - anchor.position.x),
-            2 * (pivot.position.y - anchor.position.y),
-            2 * (pivot.position.z - anchor.position.z)
-        ])
-                    
 
-        let dA2 = pow(anchor.distance, 2)
-        let dP2 = pow(pivot.distance, 2)
+    let ref = projected[0]
 
-        let ax2 = pow(anchor.position.x, 2)
-        let ay2 = pow(anchor.position.y, 2)
-        let az2 = pow(anchor.position.z, 2)
+    var a11 = 0.0, a12 = 0.0, a22 = 0.0   // AᵀA (symmetric)
+    var b1 = 0.0, b2 = 0.0                // Aᵀb
 
-        let px2 = pow(pivot.position.x, 2)
-        let py2 = pow(pivot.position.y, 2)
-        let pz2 = pow(pivot.position.z, 2)
+    for p in projected.dropFirst() {
+        let ax = 2 * (p.x - ref.x)
+        let ay = 2 * (p.y - ref.y)
+        let bi = ref.d * ref.d - p.d * p.d
+               + p.x * p.x - ref.x * ref.x
+               + p.y * p.y - ref.y * ref.y
 
-        let value = dA2 - dP2 - ax2 - ay2 - az2 + px2 + py2 + pz2
-        
-        vector.append(value)
+        a11 += ax * ax
+        a12 += ax * ay
+        a22 += ay * ay
+        b1  += ax * bi
+        b2  += ay * bi
     }
-    
-    return (matrix, vector)
+
+    let det = a11 * a22 - a12 * a12
+    guard abs(det) > 1e-9 else { return nil }   // collinear anchors → no unique solution
+
+    let x = (b1 * a22 - b2 * a12) / det
+    let y = (a11 * b2 - a12 * b1) / det
+    guard x.isFinite, y.isFinite else { return nil }
+
+    let residual = (projected.reduce(0.0) { acc, p in
+        let d = ((p.x - x) * (p.x - x) + (p.y - y) * (p.y - y)).squareRoot()
+        return acc + (d - p.d) * (d - p.d)
+    } / Double(projected.count)).squareRoot()
+
+    return TrilaterationEstimate(x: x, y: y, residual: residual)
 }
-
-private func tirlaterate_3D(anchors: [Anchor]) -> Vector2D{
-    let d1: Double = anchors[0].distance
-    let x1: Double = anchors[0].position.x
-    let y1: Double = anchors[0].position.y
-    let z1: Double = anchors[0].position.z
-    
-    let d2: Double = anchors[1].distance
-    let x2: Double = anchors[1].position.x
-    let y2: Double = anchors[1].position.y
-    let z2: Double = anchors[1].position.z
-    
-    let d3: Double = anchors[2].distance
-    let x3: Double = anchors[2].position.x
-    let y3: Double = anchors[2].position.y
-    let z3: Double = anchors[2].position.z
-        
-    // First EQ
-    let A = 2 * (x1 - x2)
-    let B = 2 * (y1 - y2)
-    let C = 2 * (z1 - z2)
-
-    let D = pow(d2, 2) - pow(d1,2) - pow(x2,2) - pow(y2,2) - pow(z2,2) + pow(x1, 2) + pow(y1, 2) + pow(z1, 2)
-    
-    // Second EQ
-    let E = 2 * (x1 - x3)
-    let F = 2 * (y1 - y3)
-    let G = 2 * (z1 - z3)
-    let H = pow(d3, 2) - pow(d1, 2) - pow(x3, 2) - pow(y3, 2) - pow(z3, 2) + pow(x1, 2) + pow(y1, 2) + pow(z1, 2)
-
-    // Aux EQ
-    let afeb = (A * F - E * B)
-
-    let alpha = (-B * G + C * F) / afeb
-    let beta = (-B * H + D * F) / afeb
-
-    let phi = (A * G - E * C) / afeb
-    let roh = (A * H - E * D) / afeb
-
-    // Coefficients
-    let first = pow(alpha, 2) + pow(phi, 2) + 1
-    let second = -(2 * alpha * beta) + (2 * x1 * alpha) - (2 * phi * roh) + (2 * y1 * phi) - (2 * z1)
-    let third = pow(beta, 2) + pow(x1, 2) - (2 * x1 * beta) + pow(roh, 2) + pow(y1, 2) - (2 * y1 * roh) + pow(z1, 2) - pow(d1, 2)
-    
-    let discriminant = Double(pow(second, 2) - 4 * first * third)
-    
-    var z: Double = 0.0
-    
-    if discriminant > 0 {
-        if let value = solveQuadratic(a: first, b: second, c: third, discriminant: discriminant){
-            z = value[0]
-        }
-    }
-    
-    let x = Double(beta - alpha * z)
-    let y = Double(roh - phi * z)
-    return Vector2D(x: x, y: y)
-}
-

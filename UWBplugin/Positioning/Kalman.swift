@@ -21,9 +21,11 @@ import simd
 final class KalmanFilter {
 
     /// Measurement noise std, meters. Estimote UWB ranges at ~±0.1 m line-of-sight.
-    private let measurementStd: Double
+    /// Raise it in multipath-heavy venues (filter trusts the fixes less, moves smoother).
+    private(set) var measurementStd: Double
     /// Random-acceleration std, m/s², for the process noise (~0.5–1 for walking).
-    private let processAccelStd: Double
+    /// Raise it if the filter lags behind a fast walk; lower it if the dot jitters.
+    private(set) var processAccelStd: Double
 
     private(set) var isInitialized = false
 
@@ -33,13 +35,22 @@ final class KalmanFilter {
         SIMD4<Double>(1, 0, 0, 0),
         SIMD4<Double>(0, 1, 0, 0)
     ])
-    private let R: simd_double2x2
+    private var R: simd_double2x2 {
+        simd_double2x2(diagonal: SIMD2<Double>(measurementStd * measurementStd,
+                                               measurementStd * measurementStd))
+    }
 
     init(measurementStd: Double = 0.1, processAccelStd: Double = 0.8) {
         self.measurementStd = measurementStd
         self.processAccelStd = processAccelStd
-        self.R = simd_double2x2(diagonal: SIMD2<Double>(measurementStd * measurementStd,
-                                                        measurementStd * measurementStd))
+    }
+
+    /// Retunes R and Q at runtime. Non-positive values leave the current setting
+    /// untouched. The state is kept: tuning takes effect from the next predict/update,
+    /// so values can be compared live without losing the current fix.
+    func setTuning(measurementStd: Double, processAccelStd: Double) {
+        if measurementStd > 0 { self.measurementStd = measurementStd }
+        if processAccelStd > 0 { self.processAccelStd = processAccelStd }
     }
 
     /// Clears the filter state. Called on stop() and whenever the anchor map changes.

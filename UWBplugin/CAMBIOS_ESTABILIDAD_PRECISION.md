@@ -75,7 +75,36 @@ ignora). El C# nuevo puede declararlos `int` y comprobar el código.
 4. Ambos mueren con el acelerómetro, pero se documentan porque explican gran parte del
    comportamiento errático observado frente a la app espejo.
 
-## 6. Cambios de comportamiento visibles desde Unity
+## 6. Banco de pruebas (`UWBTestApp/`)
+
+La app de prueba se actualizó para ejecutar **el mismo pipeline**: `Kalman.swift`,
+`Trilateration.swift`, `MapReader.swift`, `UWBManager.swift`, `UWBManagerDelegate.swift`
+y los structs son copias byte a byte (verificable con `git diff --no-index`). Su
+`PositionCoordinator` solo añade telemetría para la UI, y su `ViewModel` reproduce la
+secuencia de llamadas del bridge en vez de atajar por dentro.
+
+Se le quitó el acelerómetro y la misma carrera de datos que tenía el plugin (leía
+`distanceFilterEnabled` desde la cola serial mientras la UI lo escribía en el hilo
+principal); ahora la configuración se encola igual que en el plugin.
+
+Qué permite validar en dispositivo:
+
+| Cambio | Cómo se comprueba |
+|---|---|
+| B1/B6 — Kalman | Columnas **Crudo** vs **Filtrado** con Δ del filtro, y sliders de R/Q en vivo. |
+| C — calidad del fix | Residual, nº de anclas y edad del fix (con semáforo de color). |
+| B3 — frescura | Sensores en azul “Sin datos recientes”: conectados pero fuera de la ventana. |
+| B4 — outliers | Badge de outliers rechazados por sensor + contador de distancias inválidas. |
+| B2 — altura | Toggle + slider de altura para comparar con y sin proyección. |
+| B7 — rotación | Cabecera “N alimentando · M conectados” con el límite de 6. |
+| A3 — start/stop | Toggle de pipeline y botón Reiniciar: debe quedar exactamente un pipeline. |
+| A1/B5 — cambio de mapa | Un mapa inválido conserva el anterior y muestra el error (antes: crash); uno válido resetea el Kalman vía `applyNewAnchorMap`, el mismo camino que dispara Unity. |
+
+Para el ajuste fino de R/Q se añadió `setKalmanTuning` (ver §3, B6): retunea en caliente
+sin perder el fix, de modo que la app puede comparar valores caminando una ruta conocida
+antes de fijarlos en Unity.
+
+## 7. Cambios de comportamiento visibles desde Unity
 
 - `getCoords` **conserva el último fix** durante cortes (< 3 anclas frescas) en lugar
   de volver a null; la frescura se consulta con `getPositionData` (`fixAgeMs`).
@@ -86,11 +115,11 @@ ignora). El C# nuevo puede declararlos `int` y comprobar el código.
 - Nueva función `setUserHeight(double)`: activarla (1.2–1.4 m) cuando las anclas estén
   montadas en altura y el mapa registre su `z` real.
 
-## 7. Pendientes / siguientes pasos
+## 8. Pendientes / siguientes pasos
 
-- Ajustar `measurementStd` / `processAccelStd` con logs reales del venue (B6 fino).
-- `UWBTestApp/` conserva las copias antiguas de estas clases: portar la revisión si se
-  quiere seguir usando como banco de pruebas.
+- Compilar en Xcode: la revisión se editó en Windows, sin verificación de build.
+- Ajustar `measurementStd` / `processAccelStd` en el venue con `UWBTestApp` (B6 fino) y
+  fijar los valores encontrados en el lado Unity.
 - Si algún día se necesita predicción entre updates UWB: `CMDeviceMotion`
   (`userAcceleration` rotada por `attitude` al marco del mapa), nunca el acelerómetro
   crudo.

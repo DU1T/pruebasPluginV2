@@ -26,6 +26,7 @@ código de error, nunca un crash.
 | `freeCString` | `void freeCString(IntPtr ptr)` | Libera el string de `getCoords`. |
 | `setDistanceFilter` | `void setDistanceFilter(int enabled, double maxDistance)` | Excluye del cálculo los sensores que midan más de `maxDistance` m (histéresis de re-inclusión al 85%). No desconecta sesiones. |
 | `setUserHeight` | `void setUserHeight(double height)` | Altura del teléfono (m) para proyectar distancias inclinadas al plano del piso: `d_h = √(d² − (z_ancla − h)²)`. Usar 1.2–1.4 con anclas en techo. `<= 0` desactiva la proyección (default). |
+| `setKalmanTuning` | `void setKalmanTuning(double measurementStd, double processAccelStd)` | Reajusta R y Q en caliente sin perder el fix actual. Subir `measurementStd` (m) suaviza pero añade retraso; subir `processAccelStd` (m/s²) sigue mejor el movimiento rápido pero tiembla más. `<= 0` deja ese parámetro sin cambiar. |
 | `triggerUIRefresh` | `void triggerUIRefresh()` | Workaround de refresco de UI. Ya no publica notificaciones falsas de ciclo de vida; fuerza layout de la jerarquía de vistas. |
 
 `setDistanceFilter` y `setUserHeight` pueden llamarse antes o después de `start()`; la
@@ -71,8 +72,8 @@ cualquier rotación/offset del mapa respecto a la escena debe aplicarse ahí tam
 
 | Parámetro | Dónde | Default | Significado |
 |---|---|---|---|
-| `measurementStd` | `KalmanFilter.init` | 0.1 m | Ruido de medición UWB (R = σ²). Subir en entornos con mucho multipath. |
-| `processAccelStd` | `KalmanFilter.init` | 0.8 m/s² | Aceleración aleatoria del modelo (Q). Subir si el filtro "arrastra" al caminar rápido; bajar si tiembla. |
+| `measurementStd` | `KalmanFilter.init` / `setKalmanTuning` | 0.1 m | Ruido de medición UWB (R = σ²). Subir en entornos con mucho multipath. |
+| `processAccelStd` | `KalmanFilter.init` / `setKalmanTuning` | 0.8 m/s² | Aceleración aleatoria del modelo (Q). Subir si el filtro "arrastra" al caminar rápido; bajar si tiembla. |
 | `stalenessWindow` | `PositionCoordinator` | 1.0 s | Solo anclas con medida más reciente que esto entran a la trilateración. |
 | `connectionTimeout` | `ViewModel` | 10 s | Sin updates durante este tiempo → desconexión del sensor. |
 | `connectionLimit` | `ViewModel` | 6 | Conexiones UWB simultáneas (iOS limita las sesiones de Nearby Interaction; se rota hacia anclas más cercanas). |
@@ -87,6 +88,28 @@ Unity (C#) → @_cdecl (Main.swift) → ViewModel → PositionCoordinator → UW
 Todo el estado mutable vive en una `OperationQueue` serial; lo único que cruza hilos es
 el snapshot de posición publicado, protegido con lock (leído por `getCoords` /
 `getPositionData` desde el hilo de Unity).
+
+## Banco de pruebas (`UWBTestApp/`)
+
+App iOS que ejecuta **el mismo pipeline** que el plugin: `Kalman.swift`,
+`Trilateration.swift`, `MapReader.swift`, `UWBManager.swift`, `UWBManagerDelegate.swift`
+y los structs son copias byte a byte de los del plugin. Verificar la sincronía:
+
+```commandline
+git diff --no-index UWBplugin/Positioning/Kalman.swift UWBTestApp/Positioning/Kalman.swift
+```
+
+`PositionCoordinator` diverge solo en la telemetría que publica a la UI; el pipeline de
+medición debe mantenerse idéntico. Su `ViewModel` cumple el papel del bridge `@_cdecl`
+(mismas operaciones, misma secuencia), así que probar en la app ejercita el flujo real.
+
+Permite en dispositivo: comparar posición **cruda vs. filtrada** (con Δ del filtro),
+leer residual / anclas / edad del fix, ver sensores frescos vs. sin datos recientes y
+outliers rechazados por sensor, activar la proyección de altura, **ajustar R y Q con
+sliders**, y hacer ciclos stop/start y cambios de mapa para comprobar que no se apilan
+pipelines ni sobrevive el fix del mapa anterior.
+
+Úsala para encontrar los valores de R/Q del venue antes de fijarlos en Unity.
 
 Ver `UWBplugin/SWIFT_PLUGIN_CHANGES.md` (filtro de distancia) y
 `UWBplugin/CAMBIOS_ESTABILIDAD_PRECISION.md` (revisión de estabilidad y precisión)
