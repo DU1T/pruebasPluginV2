@@ -4,11 +4,47 @@ Framework nativo iOS que estima la posición 2D del teléfono a partir de distan
 a beacons Estimote de posición conocida (trilateración por mínimos cuadrados + filtro
 de Kalman de velocidad constante), expuesto a Unity mediante funciones `@_cdecl`.
 
+## Novedades (rama `dev-pluginV3`)
+
+Revisión de estabilidad y precisión del plugin, replicada en la app de pruebas.
+Detalle completo en [`UWBplugin/CAMBIOS_ESTABILIDAD_PRECISION.md`](UWBplugin/CAMBIOS_ESTABILIDAD_PRECISION.md).
+
+**Estabilidad**
+- El bridge ya no puede crashear: `setAnchorMap` y `start` devuelven `Int32` con
+  códigos de error; un JSON inválido conserva el mapa anterior (antes: `fatalError`).
+- Carreras de datos cerradas (estado en cola serial + snapshot bajo lock), ciclo de
+  retención roto (`weak delegate`), `start()` repetido ya no apila pipelines.
+- `triggerUIRefresh` ya no envía notificaciones de ciclo de vida falsas.
+
+**Precisión**
+- Acelerómetro crudo eliminado del Kalman (metía gravedad y tenía bugs en `F` y `G`).
+  El filtro es ahora de velocidad constante con R/Q configurables.
+- Trilateración 2D por mínimos cuadrados con residual RMS y guarda de colinealidad
+  (reemplaza el solver 3D/LAPACK).
+- Ventana de frescura de 1 s, compuerta de outliers por ancla, descarte de distancias
+  inválidas, reset del filtro al cambiar de mapa y tras huecos > 2 s.
+- Máximo 6 conexiones UWB con rotación hacia las anclas más cercanas.
+
+**API nueva**: `getPositionData` (posición + calidad del fix, sin asignaciones),
+`setUserHeight` (proyección de distancias al piso), `setKalmanTuning` (R/Q en caliente).
+
+**Cambio de comportamiento**: `getCoords` conserva el último fix durante cortes en
+vez de devolver null; usa `fixAgeMs` de `getPositionData` para saber su frescura.
+
+**App de pruebas**: pipeline idéntico al del plugin, con vista crudo vs. filtrado,
+calidad del fix, sliders de R/Q y altura; mapa `campusTest.json` actualizado
+(nuevas anclas y coordenadas).
+
 ## Build Instructions
 
 ```commandline
 xcodebuild -scheme UWBplugin -configuration Release -sdk iphoneos CONFIGURATION_BUILD_DIR=./Products -destination generic/platform=iOS
 ```
+
+> ⚠️ El `Products/UWBplugin.framework` versionado en el repo es un build **anterior**
+> a esta revisión (no exporta `getPositionData`, `setUserHeight` ni
+> `setKalmanTuning`). Recompílalo con el comando de arriba antes de copiarlo a Unity.
+> Esta revisión se editó sin verificar el build en Xcode.
 
 ## API C (desde Unity)
 
